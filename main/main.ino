@@ -37,12 +37,13 @@ const char* keyboard = "<!@. abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNO
 int charIndex = 0;
 const char* daysOfWeek[] = {"CN", "T2", "T3", "T4", "T5", "T6", "T7"};
 
-// --- BIẾN CHO WIFI ANALYZER (ĐÃ SỬA LỖI ĐƠ) ---
+// --- BIẾN CHO WIFI ANALYZER (ĐÃ SỬA LỖI) ---
 int ana_count = 0;
 String ana_ssids[5];
 int ana_rssi[5];
-bool waitingForNextScan = false;         // Cờ báo hiệu đang trong thời gian nghỉ 2s
-unsigned long lastScanCompleteTime = 0;  // Bộ đếm thời gian nghỉ
+bool scanInProgress = false;      // Cờ báo hiệu đang quét
+unsigned long lastScanTime = 0;   // Thời gian bắt đầu quét
+bool firstEnter = true;           // Cờ cho lần đầu vào chế độ
 
 // Biến Đếm ngược
 int setMinutes = 1;
@@ -113,6 +114,59 @@ void fetchWeatherData() {
   }
 }
 
+// Hàm quét WiFi mới
+void startWiFiScan() {
+  WiFi.scanDelete();        // Xóa kết quả quét cũ
+  WiFi.scanNetworks(true);  // Quét bất đồng bộ
+  scanInProgress = true;
+  lastScanTime = millis();
+}
+
+// Hàm xử lý kết quả quét
+void processScanResult() {
+  int scanResult = WiFi.scanComplete();
+  
+  if (scanResult == WIFI_SCAN_FAILED) {
+    // Nếu quét thất bại, thử lại
+    startWiFiScan();
+    return;
+  }
+  
+  if (scanResult > 0) {
+    // Đã quét xong, xử lý kết quả
+    int totalFound = min(scanResult, 15);
+    String tempSSID[15];
+    int tempRSSI[15];
+    
+    for (int i = 0; i < totalFound; i++) {
+      tempSSID[i] = WiFi.SSID(i);
+      tempRSSI[i] = WiFi.RSSI(i);
+    }
+    
+    // Sắp xếp theo cường độ tín hiệu giảm dần
+    for (int i = 0; i < totalFound - 1; i++) {
+      for (int j = i + 1; j < totalFound; j++) {
+        if (tempRSSI[j] > tempRSSI[i]) {
+          int tr = tempRSSI[i]; tempRSSI[i] = tempRSSI[j]; tempRSSI[j] = tr;
+          String ts = tempSSID[i]; tempSSID[i] = tempSSID[j]; tempSSID[j] = ts;
+        }
+      }
+    }
+    
+    // Lấy 5 mạng mạnh nhất
+    ana_count = min(totalFound, 5);
+    for (int i = 0; i < ana_count; i++) {
+      ana_ssids[i] = tempSSID[i];
+      ana_rssi[i] = tempRSSI[i];
+    }
+    
+    // Xóa kết quả quét để giải phóng bộ nhớ
+    WiFi.scanDelete();
+    scanInProgress = false;
+    firstEnter = false;  // Đã có dữ liệu, không cần hiển thị "Đang quét sóng..."
+  }
+}
+
 // ---------------- SETUP & LOOP ----------------
 
 void setup() {
@@ -156,10 +210,11 @@ void loop() {
         else if (menuIdx == 1) { encoder.setCount(setMinutes * 2); currentState = TIMER_SETUP_MIN; }
         else if (menuIdx == 2) currentState = PRICE_MODE; 
         else if (menuIdx == 3) { 
-          // --- KHI VÀO CHẾ ĐỘ ANALYZER ---
-          WiFi.scanDelete();             // Xóa mọi tác vụ quét cũ
-          ana_count = 0;                 // Xóa giao diện cũ
-          waitingForNextScan = false;    // Bắt đầu quét ngay lập tức
+          // Vào chế độ WiFi Analyzer
+          ana_count = 0;
+          firstEnter = true;
+          scanInProgress = false;
+          startWiFiScan();  // Bắt đầu quét ngay
           currentState = WIFI_ANALYZER_MODE; 
         }
         else currentState = SCAN_WIFI;
@@ -168,100 +223,74 @@ void loop() {
     }
 
     // ==========================================
-    // --- CHỨC NĂNG WIFI ANALYZER (UPDATE MỚI) ---
+    // --- CHỨC NĂNG WIFI ANALYZER (ĐÃ FIX) ---
     // ==========================================
     case WIFI_ANALYZER_MODE: {
       
-      // LOGIC QUÉT VÀ NGHỈ 2 GIÂY
-      if (waitingForNextScan) {
-        // Nếu đang trong thời gian nghỉ, kiểm tra xem đã đủ 2 giây chưa
-        if (millis() - lastScanCompleteTime > 2000) {
-          WiFi.scanNetworks(true);      // Phát lệnh quét mạng mới chạy ngầm
-          waitingForNextScan = false;   // Thoát trạng thái nghỉ
+      // Xử lý quét WiFi
+      if (scanInProgress) {
+        // Kiểm tra nếu quét quá lâu (5 giây) thì quét lại
+        if (millis() - lastScanTime > 5000) {
+          startWiFiScan();
+        } else {
+          processScanResult();  // Kiểm tra kết quả quét
         }
       } else {
-        // Đang chờ kết quả quét
-        int scanResult = WiFi.scanComplete();
-        
-        if (scanResult >= 0) {
-          // --- ĐÃ QUÉT XONG, BẮT ĐẦU XỬ LÝ DỮ LIỆU ---
-          int totalFound = min(scanResult, 15);
-          String tempSSID[15];
-          int tempRSSI[15];
-          
-          for (int i = 0; i < totalFound; i++) {
-            tempSSID[i] = WiFi.SSID(i);
-            tempRSSI[i] = WiFi.RSSI(i);
-          }
-          
-          // Thuật toán sắp xếp mảng (Đưa WiFi sóng khỏe nhất lên đầu)
-          for (int i = 0; i < totalFound - 1; i++) {
-            for (int j = i + 1; j < totalFound; j++) {
-              if (tempRSSI[j] > tempRSSI[i]) {
-                int tr = tempRSSI[i]; tempRSSI[i] = tempRSSI[j]; tempRSSI[j] = tr;
-                String ts = tempSSID[i]; tempSSID[i] = tempSSID[j]; tempSSID[j] = ts;
-              }
-            }
-          }
-          
-          // Copy 5 mạng mạnh nhất ra để hiển thị
-          ana_count = min(totalFound, 5);
-          for (int i = 0; i < ana_count; i++) {
-            ana_ssids[i] = tempSSID[i];
-            ana_rssi[i] = tempRSSI[i];
-          }
-          
-          // Xóa bộ đệm Wi-Fi của ESP32 để giải phóng RAM
-          WiFi.scanDelete(); 
-          
-          // Bật chế độ nghỉ 2 giây
-          lastScanCompleteTime = millis();
-          waitingForNextScan = true; 
-          
-        } else if (scanResult == WIFI_SCAN_FAILED) {
-          // Nếu có lỗi khởi tạo quét, ra lệnh quét lại
-          WiFi.scanNetworks(true);
+        // Đã quét xong, đợi 2 giây rồi quét lại
+        static unsigned long lastCompleteTime = 0;
+        if (lastCompleteTime == 0) {
+          lastCompleteTime = millis();
+        } else if (millis() - lastCompleteTime > 2000) {
+          startWiFiScan();
+          lastCompleteTime = 0;
         }
       }
 
-      // --- LOGIC VẼ GIAO DIỆN LÊN OLED ---
+      // --- VẼ GIAO DIỆN LÊN OLED ---
       u8g2.clearBuffer();
       
-      // Viền Header
+      // Header
       u8g2.setFont(u8g2_font_5x8_tr);
       u8g2.drawStr(22, 7, "- Wi-Fi Analyzer -");
       u8g2.drawHLine(0, 9, 128); 
 
       // Hiển thị dữ liệu
-      if (ana_count == 0) {
-        // Chỉ hiện chữ này duy nhất ở lần đầu tiên truy cập
+      if (ana_count == 0 && firstEnter) {
+        // Chỉ hiển thị khi chưa có dữ liệu và mới vào
         u8g2.setFont(u8g2_font_6x10_tf);
         int tw = u8g2.getStrWidth("Dang quet song...");
         u8g2.drawStr(64 - tw/2, 35, "Dang quet song...");
-      } else {
-        // Cập nhật 5 biểu đồ cột
+      } else if (ana_count > 0) {
+        // Hiển thị danh sách WiFi và biểu đồ
         u8g2.setFont(u8g2_font_5x8_tr);
         for (int i = 0; i < ana_count; i++) {
-          int yBase = 18 + (i * 11); // Tọa độ Y của 5 dòng
+          int yBase = 18 + (i * 11);
           
-          // Tên Wi-Fi (Cắt 9 ký tự, nằm bên trái)
+          // Tên WiFi (cắt 9 ký tự)
           u8g2.setCursor(0, yBase);
           u8g2.print(ana_ssids[i].substring(0, 9)); 
-
-          // Thanh biểu đồ (Nằm bên phải)
+          
+          // Thanh biểu đồ cường độ tín hiệu
           int barWidth = map(ana_rssi[i], -100, -40, 0, 70); 
           barWidth = constrain(barWidth, 0, 70); 
           
-          u8g2.drawFrame(55, yBase - 6, 70, 6);     // Viền
-          u8g2.drawBox(55, yBase - 6, barWidth, 6); // Lõi đặc
+          u8g2.drawFrame(55, yBase - 6, 70, 6);
+          u8g2.drawBox(55, yBase - 6, barWidth, 6);
         }
+      } else if (!firstEnter && ana_count == 0) {
+        // Không tìm thấy WiFi nào
+        u8g2.setFont(u8g2_font_6x10_tf);
+        int tw = u8g2.getStrWidth("Khong tim thay WiFi");
+        u8g2.drawStr(64 - tw/2, 35, "Khong tim thay WiFi");
       }
+      
       u8g2.sendBuffer();
 
-      // Bấm nút để thoát về Menu
+      // Thoát về menu khi nhấn nút
       if (digitalRead(SW_PIN) == LOW) {
         delay(250);
-        WiFi.scanDelete(); // Ngắt hẳn việc quét để không tốn RAM
+        WiFi.scanDelete();  // Dừng quét
+        scanInProgress = false;
         currentState = MAIN_MENU;
         encoder.setCount(0);
       }
