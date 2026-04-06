@@ -22,6 +22,8 @@ U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 ESP32Encoder encoder;
 const int SW_PIN = 4;
 const int LED_PIN = 2; 
+const int BUZZER_PIN = 23; // --- MỚI THÊM: Chân còi buzzer
+int lastEncoderCount = 0;  // --- MỚI THÊM: Biến lưu trạng thái núm vặn để check xoay
 
 // Khởi tạo NTP (Đồng hồ)
 WiFiUDP ntpUDP;
@@ -94,6 +96,13 @@ bool doubleClick = false;
 const int DOUBLE_CLICK_TIME = 400; 
 
 // ---------------- CÁC HÀM XỬ LÝ DỮ LIỆU VÀ GIAO DIỆN ----------------
+
+// --- MỚI THÊM: Hàm phát tiếng tít
+void playTick() {
+  digitalWrite(BUZZER_PIN, HIGH);
+  delay(15);
+  digitalWrite(BUZZER_PIN, LOW);
+}
 
 // Hàm gửi dữ liệu lên Google Sheets
 void sendDataToGoogleSheets(String date, String onTime, String offTime, String status) {
@@ -205,6 +214,7 @@ void setup() {
   Serial.begin(115200); Wire.begin(21, 22); u8g2.begin();
   ESP32Encoder::useInternalWeakPullResistors = (puType)1; encoder.attachHalfQuad(16, 17); encoder.setCount(0);
   pinMode(SW_PIN, INPUT_PULLUP); pinMode(LED_PIN, OUTPUT); digitalWrite(LED_PIN, LOW); 
+  pinMode(BUZZER_PIN, OUTPUT); digitalWrite(BUZZER_PIN, LOW); // --- MỚI THÊM: Setup Buzzer
   
   WiFi.mode(WIFI_STA);
 
@@ -221,6 +231,13 @@ void setup() {
 void loop() {
   int currentCount = (int)encoder.getCount() / 2;
 
+  // --- MỚI THÊM: Phát tiếng "tít" khi xoay núm vặn ---
+  if (currentCount != lastEncoderCount) {
+    playTick();
+    lastEncoderCount = currentCount;
+  }
+  // ----------------------------------------------------
+
   singleClick = false; doubleClick = false;
   int reading = digitalRead(SW_PIN);
   if (reading != btnLastState) btnLastDebounceTime = millis();
@@ -232,13 +249,13 @@ void loop() {
         btnClickCount++;
         if (btnClickCount == 1) btnFirstClickTime = millis();
         else if (btnClickCount == 2) {
-          if (millis() - btnFirstClickTime < DOUBLE_CLICK_TIME) { doubleClick = true; btnClickCount = 0; }
+          if (millis() - btnFirstClickTime < DOUBLE_CLICK_TIME) { doubleClick = true; playTick(); btnClickCount = 0; } // --- MỚI THÊM: playTick()
         }
       }
     }
   }
 
-  if (btnClickCount == 1 && (millis() - btnFirstClickTime > DOUBLE_CLICK_TIME)) { singleClick = true; btnClickCount = 0; }
+  if (btnClickCount == 1 && (millis() - btnFirstClickTime > DOUBLE_CLICK_TIME)) { singleClick = true; playTick(); btnClickCount = 0; } // --- MỚI THÊM: playTick()
   btnLastState = reading;
 
   if (doubleClick && currentState != MAIN_MENU) {
